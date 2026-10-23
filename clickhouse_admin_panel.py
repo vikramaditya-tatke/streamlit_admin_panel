@@ -1,100 +1,101 @@
-from typing import List, Any, Sequence
+from collections.abc import Sequence
+from contextlib import closing
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
-import polars as pl
 import clickhouse_connect
-from clickhouse_connect.driver import Client
+import polars as pl
 import streamlit as st
-from settings import settings
+from clickhouse_connect.driver import Client
+
+from settings import Settings
+
+SQL_DIRECTORY = Path(__file__).parent / "sql"
+TABLES_QUERY = (SQL_DIRECTORY / "discover_tables.sql").read_text(encoding="utf-8")
+LOGICAL_QUERY = (SQL_DIRECTORY / "logical_compression.sql").read_text(encoding="utf-8")
+PHYSICAL_QUERY = (SQL_DIRECTORY / "physical_compression.sql").read_text(
+    encoding="utf-8"
+)
 
 
-def create_clickhouse_client() -> Client:
-    """Initializes and returns a ClickHouse client."""
-    try:
-        client: Client = clickhouse_connect.get_client(
-            host=settings.clickhouse_base_url,
-            user=settings.clickhouse_user,
-            password=settings.clickhouse_password,
-            port=settings.clickhouse_port,
-            secure=True,
-            compress=settings.clickhouse_compression_protocol,
-            settings={"insert_deduplicate": False},
-        )
-        return client
-    except Exception as e:
-        st.error(f"Failed to connect to ClickHouse: {e}")
-        raise
+@dataclass(frozen=True)
+class CompressionQuery:
+    sql: str
+    parameters: dict[str, str]
+
+
+def quote_identifier(value: str) -> str:
+    return "`" + value.replace("\\", "\\\\").replace("`", "\\`") + "`"
+
+
+def create_clickhouse_client(config: Settings | None = None) -> Client:
+    """Create a client suitable for a read-only dashboard user."""
+    config = config or Settings()
+    return clickhouse_connect.get_client(
+        host=config.clickhouse_base_url,
+        username=config.clickhouse_user,
+        password=config.clickhouse_password,
+        port=config.clickhouse_port,
+        database=config.clickhouse_database,
+        secure=config.clickhouse_secure,
+        compress=config.clickhouse_compression_protocol,
+    )
 
 
 class ClickHouseDataExtraction:
-    def __init__(self):
-        self.client = create_clickhouse_client()
+    def __init__(self, client: Client | None = None, config: Settings | None = None):
+        self.config = config or Settings()
+        self.client = (
+            client if client is not None else create_clickhouse_client(self.config)
+        )
 
-    def make_queries(self):
-        """Generates SQL queries for logical compression from ClickHouse tables."""
-        try:
-            logical_query_result = self.client.command(
-                """
-                WITH user_tables AS (
-                    SELECT
-                        DISTINCT name as Table
-                    FROM
-                        system.tables
-                    WHERE
-                        database = 'default'
-                        AND name NOT ILIKE '%MV'
-                )
-                SELECT
-                    'SELECT ''' || Table || ''' AS Table, ' || 'SUM(`Event Count`) AS `Event Count`, ' || 'COUNT(*) AS `Row Count`, ' || '(`Row Count` / `Event Count`) AS `Ratio`, ' || '((1 - (`Row Count` / `Event Count`)) * 100) AS `Logical Compression`' || 'FROM default.' || Table || ';' AS generated_sql
-                FROM
-                    user_tables;
-                """
-            )
-            physical_query_result = self.client.command(
-                """
-                WITH user_tables AS (
-                    SELECT
-                        DISTINCT name as Table
-                    FROM
-                        system.tables
-                    WHERE
-                        database = 'default'
-                        AND name NOT ILIKE '%MV'
-                )
-                SELECT
-                    'SELECT ''' || Table || ''' AS Table, ' || 'formatReadableSize(SUM(data_compressed_bytes)) AS `Compressed Size`, ' || 'formatReadableSize(SUM(data_uncompressed_bytes)) AS `Uncompressed Size`, ' || '(SUM(data_compressed_bytes) / SUM(data_uncompressed_bytes)) AS `Ratio`, ' || '((1 - (SUM(data_compressed_bytes) / SUM(data_uncompressed_bytes))) * 100) AS `Physical Compression`' || 'FROM system.parts' || ';' AS generated_sql
-                FROM user_tables;
-                """
-            )
-            logical_queries = [row for row in logical_query_result.replace("\\'", "'").replace("\n", "").split(";")]
-            physical_queries = [row for row in physical_query_result.replace("\\'", "'").replace("\n", "").split(";")]
-            return logical_queries, physical_queries
-        except Exception as e:
-            st.error(f"Failed to generate queries: {e}")
-            raise
+    def make_queries(self) -> tuple[list[CompressionQuery], list[CompressionQuery]]:
+        """Discover stored tables and prepare each applicable metric query."""
+        tables = self.client.query(
+            TABLES_QUERY,
+            parameters={"database": self.config.clickhouse_database},
+        ).result_rows
+        logical_queries = []
+        physical_queries = []
+        for table, has_event_count in tables:
+            parameters = {"database": self.config.clickhouse_database, "table": table}
+            if has_event_count:
+                logical_sql = LOGICAL_QUERY.replace(
+                    "{database:Identifier}",
+                    quote_identifier(self.config.clickhouse_database),
+                ).replace("{table:Identifier}", quote_identifier(table))
+                logical_queries.append(CompressionQuery(logical_sql, parameters))
+            physical_queries.append(CompressionQuery(PHYSICAL_QUERY, parameters))
+        return logical_queries, physical_queries
 
-    def extract(self, logical_queries, physical_queries: list[str]):
-        """Executes the generated queries and collects the results."""
+    def extract(
+        self,
+        logical_queries: Sequence[CompressionQuery],
+        physical_queries: Sequence[CompressionQuery],
+    ) -> tuple[list[Sequence[Any]], list[Sequence[Any]]]:
+        """Execute every query, preserving rows and native result types."""
         logical = []
-        for query in logical_queries[:-1]:
-            result = self.client.query(query).result_set
-            logical.extend(result)
-
+        for query in logical_queries:
+            logical.extend(
+                self.client.query(query.sql, parameters=query.parameters).result_rows
+            )
         physical = []
-        for query in physical_queries[:-1]:
-            result = self.client.query(query).result_set
-            physical.extend(result)
-
+        for query in physical_queries:
+            physical.extend(
+                self.client.query(query.sql, parameters=query.parameters).result_rows
+            )
         return logical, physical
 
 
 def transform(logical: list[Sequence[Any]], physical: list[Sequence[Any]]):
-    """Transforms the raw query results into a Polars DataFrame."""
+    """Create typed frames, including when discovery returns no tables."""
     df1 = pl.DataFrame(
         logical,
         schema={
-            "Table": pl.Utf8,
-            "Event_Count": pl.Int64,
-            "Row_Count": pl.Int64,
+            "Table": pl.String,
+            "Event_Count": pl.UInt64,
+            "Row_Count": pl.UInt64,
             "Ratio": pl.Float64,
             "Logical_Compression": pl.Float64,
         },
@@ -103,11 +104,11 @@ def transform(logical: list[Sequence[Any]], physical: list[Sequence[Any]]):
     df2 = pl.DataFrame(
         physical,
         schema={
-            "Table": pl.Utf8,
-            "Compressed Size": pl.Utf8,
-            "Uncompressed Size": pl.Utf8,
+            "Table": pl.String,
+            "Compressed Size": pl.String,
+            "Uncompressed Size": pl.String,
             "Ratio": pl.Float64,
-            "Physical Compression": pl.Utf8,
+            "Physical Compression": pl.Float64,
         },
         orient="row",
     )
@@ -115,29 +116,33 @@ def transform(logical: list[Sequence[Any]], physical: list[Sequence[Any]]):
 
 
 def run():
-    task = ClickHouseDataExtraction()
-    logical_queries, physical_queries = task.make_queries()
-    logical, physical = task.extract(logical_queries, physical_queries)
-    df1, df2 = transform(logical, physical)
-    # Streamlit app for displaying the results
-    st.title("ClickHouse Logical Compression Analysis")
+    st.title("ClickHouse Compression Analysis")
+    config = Settings()
+    with closing(create_clickhouse_client(config)) as client:
+        task = ClickHouseDataExtraction(client=client, config=config)
+        logical, physical = task.extract(*task.make_queries())
+        df1, df2 = transform(logical, physical)
 
-    # Filter section
-    st.sidebar.header("Filter Options")
-    table_filter = st.sidebar.multiselect(
-        "Select Tables",
-        df1["Table"].unique().to_list(),
-        default=df1["Table"].unique().to_list(),
+    if df2.is_empty():
+        st.info("No eligible MergeTree tables were found.")
+    elif df1.is_empty():
+        st.info(
+            "Logical compression requires an Event Count column; "
+            "these tables only have physical metrics."
+        )
+    st.caption(
+        "Logical compression = (1 − stored rows / total Event Count) × 100. "
+        "Physical compression uses active parts on the connected server. "
+        "A zero denominator is shown as an unavailable value."
     )
-
-    # Apply filter
+    st.sidebar.header("Filter Options")
+    tables = df2["Table"].to_list()
+    table_filter = st.sidebar.multiselect("Select Tables", tables, default=tables)
     filtered_df1 = df1.filter(pl.col("Table").is_in(table_filter))
     filtered_df2 = df2.filter(pl.col("Table").is_in(table_filter))
 
-    # Display both DataFrames
     st.write("Logical Compression Results:")
     st.dataframe(filtered_df1)
-
     st.write("Physical Compression Results:")
     st.dataframe(filtered_df2)
 

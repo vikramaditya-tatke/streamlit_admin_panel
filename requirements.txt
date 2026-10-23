@@ -1,0 +1,4 @@
+clickhouse-connect==1.11.0
+polars==2.0.0
+pydantic-settings==2.16.1
+streamlit==1.66.1

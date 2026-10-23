@@ -8,7 +8,6 @@ class Settings(BaseSettings):
     clickhouse_password: str
     clickhouse_port: int
     clickhouse_user: str
+    clickhouse_database: str = "default"
+    clickhouse_secure: bool = True
     model_config = SettingsConfigDict(env_file=".env")
-
-
-settings = Settings()
