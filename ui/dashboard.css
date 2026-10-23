@@ -1,0 +1,41 @@
+.stApp, .stApp button, .stApp input, .stApp select {
+  font-family: Arial, Helvetica, sans-serif;
+}
+[data-testid="stMainBlockContainer"] { padding: 2.2rem 2.6rem; max-width: 1640px; }
+[data-testid="stHeader"] { background: transparent; }
+[data-testid="stSidebar"] { min-width: 240px; max-width: 260px; }
+[data-testid="stSidebarUserContent"] { padding: 1.5rem 1.35rem; }
+[data-testid="stSidebarHeader"] { height: 2.4rem; min-height: 2.4rem; padding-top: .4rem; }
+[data-testid="stSidebar"] hr { border-color: #3C3931; margin: 1.5rem 0; }
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { color: #CEC5B5; font-size: .78rem; font-weight: 500; }
+[data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] { gap: .3rem; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label { padding: .55rem .7rem; border-radius: 7px; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) { background: #343128; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label:focus-within { outline: 2px solid #D8C9AB; }
+[data-testid="stSidebar"] [data-baseweb="tag"] { background: #403B30; color: #F5EDDC; font-size: 12px; }
+.brand { color: #F5EDDC; font-size: 1.3rem; font-weight: 600; letter-spacing: -.5px; margin: 0 0 2.2rem; }
+.hero h1 { color: #25241F; font-size: 2rem; font-weight: 600; letter-spacing: -.9px; padding: 0; margin: .2rem 0 1rem; line-height: 1.2; }
+.kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: .3rem 0 1.25rem; }
+.kpi { background: #FFFCF5; border: 1px solid #E1DACD; border-radius: 10px; padding: 21px; min-height: 105px; }
+.kpi-label { color: #706A60; font-size: .78rem; font-weight: 400; margin-bottom: 12px; }
+.kpi-value { color: #25241F; font-size: 1.8rem; line-height: 1.15; font-weight: 600; letter-spacing: -.7px; font-variant-numeric: tabular-nums; }
+.st-key-footprint, .st-key-allocation, .st-key-explorer { background: #FFFCF5; border: 1px solid #E1DACD; border-radius: 10px; padding: 20px 22px; }
+.panel-heading h2 { color: #302D26; font-size: 1rem; font-weight: 600; letter-spacing: -.2px; padding: 0; margin: 0 0 15px; }
+.legend-row { display: flex; justify-content: space-between; gap: 12px; color: #686154; font-size: .75rem; margin: 10px 0; }
+.legend-label { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; }
+.legend-dot { width: 7px; height: 7px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
+.legend-value { color: #39352D; font-variant-numeric: tabular-nums; white-space: nowrap; }
+[data-testid="stButton"] button, [data-testid="stDownloadButton"] button { font-size: .8rem; border-radius: 7px; }
+[data-testid="stDataFrame"] { border-radius: 7px; overflow: hidden; }
+[data-testid="stTextInput"] input { font-size: .82rem; }
+@media (min-width: 1001px) { .st-key-footprint, .st-key-allocation { min-height: 400px; } }
+@media (max-width: 1000px) {
+  [data-testid="stMainBlockContainer"] { padding: 1.6rem 1.3rem; }
+  .kpi { padding: 16px; }
+  .hero h1 { font-size: 1.8rem; }
+}
+@media (max-width: 680px) {
+  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hero h1 { font-size: 1.6rem; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

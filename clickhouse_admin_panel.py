@@ -116,35 +116,19 @@ def transform(logical: list[Sequence[Any]], physical: list[Sequence[Any]]):
 
 
 def run():
-    st.title("ClickHouse Compression Analysis")
+    from catalog import load_catalog
+    from dashboard import render_dashboard
+
+    st.set_page_config(
+        page_title="ClickHouse",
+        page_icon=":material/database:",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
     config = Settings()
     with closing(create_clickhouse_client(config)) as client:
-        task = ClickHouseDataExtraction(client=client, config=config)
-        logical, physical = task.extract(*task.make_queries())
-        df1, df2 = transform(logical, physical)
-
-    if df2.is_empty():
-        st.info("No eligible MergeTree tables were found.")
-    elif df1.is_empty():
-        st.info(
-            "Logical compression requires an Event Count column; "
-            "these tables only have physical metrics."
-        )
-    st.caption(
-        "Logical compression = (1 − stored rows / total Event Count) × 100. "
-        "Physical compression uses active parts on the connected server. "
-        "A zero denominator is shown as an unavailable value."
-    )
-    st.sidebar.header("Filter Options")
-    tables = df2["Table"].to_list()
-    table_filter = st.sidebar.multiselect("Select Tables", tables, default=tables)
-    filtered_df1 = df1.filter(pl.col("Table").is_in(table_filter))
-    filtered_df2 = df2.filter(pl.col("Table").is_in(table_filter))
-
-    st.write("Logical Compression Results:")
-    st.dataframe(filtered_df1)
-    st.write("Physical Compression Results:")
-    st.dataframe(filtered_df2)
+        snapshot = load_catalog(client)
+    render_dashboard(snapshot)
 
 
 if __name__ == "__main__":

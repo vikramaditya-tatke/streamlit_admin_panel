@@ -1,3 +1,4 @@
+altair==6.3.0
 clickhouse-connect==1.11.0
 polars==2.0.0
 pydantic-settings==2.16.1

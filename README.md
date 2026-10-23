@@ -1,10 +1,21 @@
-# ClickHouse compression dashboard
+# ClickHouse dashboard
 
-A Streamlit dashboard that discovers ClickHouse tables, extracts logical and physical compression metrics, and displays filterable Polars dataframes. All runtime SQL lives in [`sql/`](sql/).
+A Streamlit dashboard for the existing ClickHouse catalog. The interface reads `system.tables` and active `system.parts`; it requires no sample data and does not scan application event tables.
+
+## Features
+
+- Black and beige theme with consistent Arial typography.
+- Overview with table count, compressed bytes, weighted physical compression, and known row counts.
+- Storage and row-count charts, plus storage allocation by database.
+- Table view with database and engine filters, literal search, sorting, and CSV export.
+- System tables, application tables, views, and other engines remain visible in the catalog.
+- Unknown metadata remains unavailable rather than being reported as zero.
+
+Both pages use concise headings and control labels. Connection details, subtitles, decorative names, badges, supporting captions, and footer copy are omitted.
 
 ## Run locally
 
-Verified with Python 3.12, Streamlit 1.66.1, Polars 2.0.0, ClickHouse Connect 1.11.0, and a Docker-hosted ClickHouse 26.9.25.15 server.
+Verified with Python 3.12, Streamlit 1.66.1, Polars 2.0.0, Altair 6.3.0, ClickHouse Connect 1.11.0, and Docker ClickHouse 26.9.25.15.
 
 ```sh
 uv venv --python 3.12
@@ -12,7 +23,7 @@ uv pip install -r requirements-dev.txt
 cp .env.example .env
 ```
 
-Edit `.env` with your server's credentials. For the local Docker HTTP endpoint, use:
+Configure the existing server credentials in `.env`. For local Docker HTTP:
 
 ```dotenv
 CLICKHOUSE_BASE_URL=127.0.0.1
@@ -25,49 +36,54 @@ CLICKHOUSE_COMPRESSION_PROTOCOL=lz4
 CLICKHOUSE_BATCH_SIZE=10000
 ```
 
-`CLICKHOUSE_BASE_URL` is a hostname or IP address, without a URL scheme. Use HTTP port `8123`, or your HTTPS port with `CLICKHOUSE_SECURE=true`; native TCP port `9000` is incompatible with this driver. The default HTTPS settings in `.env.example` use port `8443`.
+`CLICKHOUSE_BASE_URL` is a hostname or IP without a scheme. Use the HTTP interface (`8123`) or your HTTPS port with `CLICKHOUSE_SECURE=true`, rather than native TCP port `9000`. Environment variables override `.env`. The database setting controls the client's initial database; the catalog view exposes all databases the account can see.
 
-`CLICKHOUSE_BATCH_SIZE` is retained from the original settings contract; this dashboard performs no inserts. `CLICKHOUSE_DATABASE` defaults to `default` and `CLICKHOUSE_SECURE` defaults to `true`. The other settings are required. Environment variables take precedence over `.env`.
+`CLICKHOUSE_DATABASE` defaults to `default`; `CLICKHOUSE_SECURE` defaults to `true`. The other settings remain required. `CLICKHOUSE_BATCH_SIZE` is retained for compatibility with the original configuration contract and is unused by this read-only dashboard.
 
-Run commands from the repository root:
+Run from the repository root:
 
 ```sh
 .venv/bin/python -m streamlit run clickhouse_admin_panel.py --server.address 127.0.0.1
 ```
 
-Open [the dashboard](http://127.0.0.1:8501). The dashboard needs SELECT access to the selected tables and the corresponding `system.tables`, `system.columns`, and `system.parts` metadata. It closes its client after each extraction and does not set insert options. Connection, query, and schema failures propagate to Streamlit rather than being converted into empty or successful results.
+Open [the dashboard](http://127.0.0.1:8501). Select databases and an engine family in the sidebar. Search and sorting apply to the table view and CSV export. Chart controls switch the footprint comparison between storage and known row counts. Refresh reloads the metadata snapshot; other widget interactions also read a fresh snapshot.
+
+The runtime account needs SELECT access to `system.tables`, `system.columns`, and `system.parts`. The dashboard performs no data writes. Connection, query, and schema errors propagate; failures are not converted into successful empty results. Clients close after extraction.
 
 ## Metric contracts
 
-Discovery includes stored tables whose engines end in `MergeTree` in the configured database. It excludes views, non-MergeTree engines, internal `.inner*` tables, and names ending in `MV` (case insensitive, preserving the original suffix convention).
+| Metric | Source / calculation |
+| --- | --- |
+| Tables | Visible catalog relations in the selected databases and engine scope |
+| Compressed data | Sum of compressed payload bytes in active parts |
+| Space saved | `(1 - sum(compressed bytes) / sum(uncompressed bytes)) * 100` |
+| Known rows | Sum of available `system.tables.total_rows` metadata |
+| Parts | Number of active parts for that database and table |
 
-| Metric | Calculation | Required data |
-| --- | --- | --- |
-| Logical ratio | Stored row count / sum of `Event Count` | An `Event Count` column containing nonnegative integer counts whose total fits UInt64 |
-| Logical compression (%) | `(1 - logical ratio) * 100` | Same as logical ratio |
-| Physical ratio | Compressed data bytes / uncompressed data bytes | Active parts for that database and table |
-| Physical compression (%) | `(1 - physical ratio) * 100` | Same as physical ratio |
+Compression uses byte-weighted totals, not an average of table percentages. Database and table names form the join key, so same-named tables in different databases remain separate. Active parts are aggregated before combining them with the catalog, consistent with the ClickHouse `query-join-filter-before` guidance.
 
-Logical metrics only apply to tables with the exact `Event Count` column name. Tables without it still have physical metrics and remain selectable. The app explicitly explains when none of the discovered tables supports logical metrics. It does not infer event counts from unrelated columns.
+Physical sizes exclude inactive parts and auxiliary files such as indexes. They describe the connected server, not a cluster-wide total. Views and other non-MergeTree engines retain unavailable part-size and compression values. Empty MergeTree tables have zero physical bytes and unavailable compression. A scope containing only unknown values shows unavailable totals; an empty selection has zero tables. Negative compression is possible when encoding overhead exceeds the uncompressed data size.
 
-Logical aggregation scans the selected source tables in full. The ClickHouse review checked `schema-pk-filter-on-orderby` and `query-index-skipping-indices`; these whole-table totals have no selective source predicate to optimize. The queries contain no JOINs, so the JOIN algorithm, pre-filtering, and ANY JOIN rules do not apply.
+Catalog row counts remain nullable. The dashboard does not issue COUNT queries to replace missing metadata. A zero denominator produces an unavailable compression percentage. No historical change or trend values are invented.
 
-Physical metrics exclude inactive parts and auxiliary files such as indexes. They describe the connected server, not a cluster-wide or replicated total. Small tables can have negative physical compression when storage encoding is larger than the uncompressed data. A zero denominator produces SQL NULL, displayed as unavailable, rather than NaN or infinity. Percentages remain numeric in both dataframes.
+Catalog discovery excludes the duplicate compatibility databases `information_schema` and `INFORMATION_SCHEMA`, plus internal `.inner*` relations. It otherwise includes existing system and application relations, including `system.tables` itself.
 
-The same table selection filters both result sets; clearing the selection displays empty results. SQL values use driver parameters. Identifiers are quoted and escaped when rendering the logical query, including names containing quotes, backticks, and semicolons.
+The original `ClickHouseDataExtraction` and `transform` functions remain available for logical compression workflows. Their SQL is retained separately and regression-tested. That pipeline requires an integer `Event Count` column and scans those source tables when explicitly invoked; the current metadata dashboard does not calculate logical compression.
 
-## SQL and code layout
+## Source layout
 
-- [`sql/discover_tables.sql`](sql/discover_tables.sql): table discovery and logical-metric eligibility.
-- [`sql/logical_compression.sql`](sql/logical_compression.sql): logical aggregation for one table.
-- [`sql/physical_compression.sql`](sql/physical_compression.sql): physical aggregation scoped to one database, table, and its active parts.
-- [`clickhouse_admin_panel.py`](clickhouse_admin_panel.py): extraction, dataframe construction, and Streamlit UI.
-- [`settings.py`](settings.py): environment configuration, loaded when the pipeline runs.
-- [`tests/sql/`](tests/sql/): test fixtures and independent verification queries.
+- `catalog.py`: metadata extraction, typed frames, filtering, and aggregate metric contracts.
+- `dashboard.py`: the Overview and Tables views.
+- `ui/dashboard.css` and `.streamlit/config.toml`: layout, typography, and theme.
+- `clickhouse_admin_panel.py`: application entry point, client creation, and the original compression pipeline.
+- `settings.py`: environment configuration, loaded when the app runs.
+- `sql/catalog.sql`, `sql/storage_summary.sql`, `sql/server_version.sql`: dashboard queries.
+- `sql/discover_tables.sql`, `sql/logical_compression.sql`, `sql/physical_compression.sql`: retained compression-pipeline queries.
+- `tests/sql/`: fixture and verification SQL.
+
+All executable SQL remains outside the Python source. Dynamic SQL values use driver parameters; logical-pipeline identifiers are quoted and escaped.
 
 ## Verification
-
-Run unit tests and static checks without a ClickHouse server:
 
 ```sh
 .venv/bin/python -m pytest -q
@@ -75,24 +91,24 @@ Run unit tests and static checks without a ClickHouse server:
 .venv/bin/ruff format --check .
 ```
 
-Run the complete suite against the server configured in `.env`:
+Run all integration tests against the configured Docker server:
 
 ```sh
 .venv/bin/python -m pytest --clickhouse -q
 ```
 
-The integration suite creates two uniquely named temporary databases, seeds representative data, and drops those databases at teardown. Its test account therefore needs CREATE DATABASE, CREATE TABLE/VIEW, INSERT, OPTIMIZE, and DROP permissions in addition to SELECT. Those write permissions are only needed for verification, not for the dashboard.
+Integration tests create and remove two uniquely named temporary databases. The test account needs CREATE DATABASE/TABLE/VIEW, INSERT, OPTIMIZE, and DROP privileges in addition to SELECT. Those privileges are unnecessary for normal dashboard use.
 
-Verified on 23 October 2026: **12 tests passed** against Docker ClickHouse **26.9.25.15**. Coverage includes known logical totals, per-table and per-database physical sizes, exclusion of inactive parts, quoted identifiers, UInt64 counts above the signed Int64 range, zero denominators, unsupported tables/views, read-only requests, exception propagation and client closure, empty discovery, and Streamlit table filtering.
+Verified on 23 October 2026: **17 tests passed** against Docker ClickHouse **26.9.25.15**. Coverage includes real catalog rendering, database and engine scopes, search, page navigation, empty selections, nullable metadata, byte-weighted summaries, cross-database table names, and the retained compression pipeline's aggregation, identifier, read-only-request, and error-propagation contracts.
 
-The running app was also verified in the Codex in-app browser: the existing `station` table reported **1.89 MiB compressed / 4.59 MiB uncompressed**, or **58.8231% physical compression**; clearing and restoring its selection updated the results. That table has no `Event Count` column, so its logical metrics are unavailable. In a temporary browser dataset, selecting `events_beta` showed 200 events in 100 stored rows (**50% logical compression**) and **99.2176% physical compression** in both filtered tables. The temporary browser server and databases were removed afterward.
+The app was also verified in the in-app browser against the existing server catalog, including its system tables.
 
-![Streamlit displaying the Docker-hosted station table](docs/streamlit-verification.png)
+![Overview](docs/overview.png)
 
-![Streamlit displaying verified logical and physical fixture results](docs/streamlit-logical-verification.png)
+![Tables](docs/tables.png)
 
-## Local ClickHouse Docker upgrade
+## Docker server
 
-The separate `../clickhouse-docker/docker-compose.yml` project was updated from ClickHouse **26.1.2.11** to the explicit image `clickhouse/clickhouse-server:26.9.25.15`. The official Docker registry did not publish a `26.10` tag at verification time, so 26.9.25.15 was selected explicitly. See [official image version tags](https://clickhouse.com/docs/get-started/setup/self-managed/docker#versions) and [the official image registry](https://hub.docker.com/r/clickhouse/clickhouse-server/tags?name=26.9.25.15).
+The separate `../clickhouse-docker/docker-compose.yml` project is pinned to `clickhouse/clickhouse-server:26.9.25.15`. It was previously upgraded from 26.1.2.11 after confirming the requested 26.10 image was not published. All six existing application tables and row counts were preserved. That upgrade retained persistent mounts and saved a recovery copy under `/tmp/streamlit-admin-clickhouse-upgrade/`.
 
-Only the ClickHouse service was recreated. Its persistent mounts were retained, and all six existing tables and their row counts matched before and after the upgrade. A stopped-container data copy and the previous Compose file were saved locally under `/tmp/streamlit-admin-clickhouse-upgrade/` for recovery; this temporary backup is not part of the repository. No host ClickHouse server is required or left running.
+The dashboard uses the existing Docker server. No host ClickHouse server is required or started.

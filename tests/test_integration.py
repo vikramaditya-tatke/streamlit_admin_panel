@@ -99,35 +99,40 @@ def test_pipeline_with_readonly_requests(dataset):
         assert len(physical) == len(PHYSICAL_TABLES)
 
 
-def test_streamlit_filters_both_results_and_accepts_empty_selection(
-    dataset, monkeypatch
-):
+def test_streamlit_catalog_filters_existing_databases_and_tables(dataset, monkeypatch):
     for key, value in dataset.model_dump().items():
         monkeypatch.setenv(key.upper(), str(value))
     app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
     assert not app.exception
-    assert set(app.sidebar.multiselect[0].options) == PHYSICAL_TABLES
-    assert len(app.dataframe[0].value) == len(LOGICAL_TABLES)
-    assert len(app.dataframe[1].value) == len(PHYSICAL_TABLES)
-    app.sidebar.multiselect[0].set_value(["events_alpha"]).run()
+    assert "system" in app.sidebar.multiselect(key="databases").options
+    app.sidebar.multiselect(key="databases").set_value(
+        [dataset.clickhouse_database]
+    ).run()
+    assert not app.exception
+    frame = app.dataframe[0].value
+    assert set(frame["Database"]) == {dataset.clickhouse_database}
+    assert "ordinary_view" in set(frame["Table"])
+    assert "memory_events" in set(frame["Table"])
+    app.text_input(key="table_search").set_value("events_alpha").run()
     assert not app.exception
     assert app.dataframe[0].value["Table"].tolist() == ["events_alpha"]
-    assert app.dataframe[1].value["Table"].tolist() == ["events_alpha"]
-    app.sidebar.multiselect[0].set_value(["without_event_count"]).run()
-    assert app.dataframe[0].value.empty
-    assert app.dataframe[1].value["Table"].tolist() == ["without_event_count"]
-    app.sidebar.multiselect[0].set_value([]).run()
+    app.text_input(key="table_search").set_value("").run()
+    app.sidebar.selectbox(key="engine_family").set_value("Other engines").run()
     assert not app.exception
-    assert app.dataframe[0].value.empty
-    assert app.dataframe[1].value.empty
+    assert set(app.dataframe[0].value["Table"]) == {
+        "ordinary_view",
+        "materialized_without_suffix",
+        "memory_events",
+    }
+    app.sidebar.radio(key="workspace").set_value("Tables").run()
+    assert not app.exception
+    assert len(app.dataframe) == 1
 
 
-def test_streamlit_with_no_tables(dataset, monkeypatch):
+def test_streamlit_with_empty_database_selection(dataset, monkeypatch):
     for key, value in dataset.model_dump().items():
         monkeypatch.setenv(key.upper(), str(value))
-    monkeypatch.setenv("CLICKHOUSE_DATABASE", "information_schema")
     app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
+    app.sidebar.multiselect(key="databases").set_value([]).run()
     assert not app.exception
-    assert app.info[0].value == "No eligible MergeTree tables were found."
     assert app.dataframe[0].value.empty
-    assert app.dataframe[1].value.empty
